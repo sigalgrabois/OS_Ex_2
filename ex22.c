@@ -1,35 +1,27 @@
 // Sigal graboys 319009304
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <dirent.h>
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 
-// Defines status codes.
-#define SUCCESS     0
+// defines for return values.
 #define ERROR       -1
+#define SUCCESS     0
 #define IDENTICAL   1
-#define SIMILAR     3
 #define DIFFERENT   2
-#define FAILURE     4   // A failure is a possible result, and does not require to exit the program.
+#define SIMILAR     3
+#define FAIL     4   // Fail return 4 if program failed.
 #define NOT_FOUND   5
-
 #define TIMED_OUT   124 // Timeout return 124 if program timed-out.
 
-// Defines maximum sizes for conf.txt file reading buffer and system path size.
+// Define max path length.
 #define PATH_MAX    4096
-
-// Defines relative file locations.
-#define BINARY  "./b.out"
-#define OUTPUT  "./output.txt"
-#define RESULTS "./results.csv"
-#define ERRORS  "./errors.txt"
-#define COMP    "./comp.out"
 
 
 // print() function declaration (defined below).
@@ -43,7 +35,7 @@ int print(const char *message) {
 
 
 int redirectIO(const char *file, int new_fd) {
-    // Output redirection.
+    // output redirection.
 
     if (new_fd == 1 || new_fd == 2) {
 
@@ -90,7 +82,8 @@ int redirectIO(const char *file, int new_fd) {
 
 int writeResults(const char *student_name, const char *grade, const char *details) {
     // Open the file.
-    int csv_file_descriptor = open(RESULTS, O_WRONLY | O_APPEND | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    int csv_file_descriptor = open("./results.csv", O_WRONLY | O_APPEND | O_CREAT,
+                                   S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (csv_file_descriptor == ERROR) {
         print("Error in: open\n");
         return ERROR;
@@ -111,7 +104,7 @@ int writeResults(const char *student_name, const char *grade, const char *detail
         return ERROR;
     }
 
-    // Close the file and handle errors.
+    // Close the file and handle "./errors.txt".
     if (close(csv_file_descriptor) != SUCCESS) {
         print("Error in: close\n");
         return ERROR;
@@ -119,12 +112,6 @@ int writeResults(const char *student_name, const char *grade, const char *detail
     return SUCCESS;
 }
 
-/**********************************************************************************
-* Function:     safeRemove
-* Input:        String -- a path to a file (include its name).
-* Output:       0 if the file is removed or not exists, -1 if an error occured.
-* Operation:    Safely remove a file and notify if something went wrong.
-***********************************************************************************/
 int deleteFile(const char *fileName) {
     // Check if the file exists.
     if (access(fileName, F_OK) == SUCCESS) {
@@ -139,136 +126,89 @@ int deleteFile(const char *fileName) {
 }
 
 
-/**********************************************************************************
-* Function:     execute
-* Input:        Arguments for execvp() and a path for an input file (maybe NULL).
-* Output:       0 for success, -1 for error, ex31.c return value, or 124 for time-out.
-* Operation:    Uses fork() and execvp() to run the given command. Note that the
-*               child is responsible for IO redirection and the parent is
-*               responsible for getting the output/timeout of the execution.
-***********************************************************************************/
-int execute(char **command, const char *inputFile) {
-
-    // Fork in order to call a bash command without loosing the memory allocated for this program.
+int runCommand(char **args, const char *inputPath) {
     pid_t pid = fork();
 
-    // Child executing process.
-    if (pid == 0) {
-
-        // Redirect output to output.txt (temp) file and errors to errors.txt file.
-        if (redirectIO(ERRORS, 2) == ERROR || redirectIO(OUTPUT, 1) == ERROR) {
+    if (pid < 0) {
+        // fork() failed.
+        print("Error in: fork\n");
+        return ERROR;
+        // Child process.
+    } else if (pid == 0) {
+        // use redirection to redirect input to input.txt file - if exists.
+        if (inputPath != NULL && redirectIO(inputPath, 0)) {
             return ERROR;
         }
-
-        // Redirect input from the given inputFile (if given).
-        if (inputFile != NULL && redirectIO(inputFile, 0)) {
+        // use redirection to redirect "./errors.txt" to "./errors.txt".txt file and "./output.txt" to "./results.csv" file.
+        if (redirectIO("./errors.txt", 2) == ERROR || redirectIO("./output.txt", 1) == ERROR) {
             return ERROR;
         }
-
-        // User execvp() to execute command.
-        if (execvp(command[0], command) != SUCCESS) {
+        // execute the command using execvp.
+        if (execvp(args[0], args) != SUCCESS) {
             print("Error in: execvp\n");
             return ERROR;
         }
-    }
-
-        // Parent waiting process.
-    else if (pid > 0) {
-
-        // Wait for the child to finish.
+    } else {
+        // Wait for the child process to finish.
         int status;
-        if (waitpid(pid, &status, WUNTRACED) == ERROR) {
+        if (waitpid(pid, &status, WUNTRACED) < 0) {
             print("Error in: waitpid\n");
             return ERROR;
         }
 
-        // If child is timed-out, return 4 for failure.
-        if (inputFile != NULL && WIFEXITED(status) && WEXITSTATUS(status) == TIMED_OUT) {
+        // If the child process timed out, return 124 for failure.
+        if (inputPath != NULL && WIFEXITED(status) && WEXITSTATUS(status) == TIMED_OUT) {
             return TIMED_OUT;
         }
 
-        // If chiled has finished on time, check exit-status and return it.
-        if (!strcmp(command[0], COMP) && WIFEXITED(status)) {
+        // If the child process finished on time, check exit status and return it.
+        if (!strcmp(args[0], "./comp.out") && WIFEXITED(status)) {
             return WEXITSTATUS(status);
         }
-
     }
 
-        // Case pid < 0 means fork() failed so return -1 for error.
-    else if (pid < 0) {
-        print("Error in: fork\n");
-        return ERROR;
-    }
-
-    // Returns 0 for success.
     return SUCCESS;
-
 }
 
-/**********************************************************************************
-* Function:     checkExtension
-* Input:        fileName - a string which represent a file name.
-* Output:       0 for success, 4 for failure
-* Operation:    Look for a sequence of chars: ".c\0" or: ".C\0" and return 0 for
-*               success. If couldn't find a sequence, return 4 for failure.
-***********************************************************************************/
-int checkExtension(const char *fileName) {
-
-    // Variables for a loop.
-    int i, lim = strlen(fileName);
-
-    // This loop checks the extension of the given fileName.
-    for (i = 0; i < lim; ++i) {
-        if (fileName[i] == '.') {
-            if (fileName[i + 1] == 'c' || fileName[i + 1] == 'C') {
-                if (fileName[i + 2] == '\0') {
-                    return SUCCESS;
+int check_extension(const char *filename) {
+    int limit = strlen(filename);
+    for (int i = 0; i < limit; ++i) {
+        if (filename[i] == '.') {
+            if (filename[i + 1] == 'C' || filename[i + 1] == 'c') {
+                if (filename[i + 2] == '\0') {
+                    return SUCCESS; // success
                 }
             }
         }
     }
-
-    // If the file is have no C extension, return 4 for failure.
-    return FAILURE;
-
+    return FAIL;
 }
 
-/**********************************************************************************
-* Function:     findAndCompile
-* Input:        Current directory name and the path to current directory.
-* Output:       0 for success, 4 for failure, -1 for significant error.
-* Operation:    This function traverse the the directory entities inside the
-*               current directory name and look for a C file with checkExtension()
-*               function. Once found, it uses execute() function to compile it.
-*               It also uses writeToCSV() function to .. write to CSV when needed.
-***********************************************************************************/
-int findAndCompile(const char *name, const char *directoryPath) {
 
-    // Initialize status variable to "not found". It will change if a C file is found.
-    char status = NOT_FOUND;
-
+int CompileCFile(const char *filename, const char *directoryPath) {
     // Open current directory.
-    DIR *dir = opendir(directoryPath);
-    if (!dir) {
+    DIR *dirptr;
+    if (!(dirptr = opendir(directoryPath))) {
         print("Error in: opendir\n");
         return ERROR;
     }
+    struct dirent *dirEntry;
+    // init file status  as not found.
+    int iscFileFound = NOT_FOUND;
 
-    // This loop looks for the C file in the current directory.
-    struct dirent *dirEnt;
-    while ((dirEnt = readdir(dir)) != NULL) {
-
+    // look for a c file in the directory
+    while ((dirEntry = readdir(dirptr)) != NULL) {
         // Check file's extension.
-        if (checkExtension(dirEnt->d_name) == SUCCESS) {
+        if (check_extension(dirEntry->d_name) == SUCCESS) {
 
             // Creates a path to the C file.
-            char path[PATH_MAX] = {0};
+            char path[PATH_MAX];
             strcpy(path, directoryPath);
             strcat(path, "/");
-            strcat(path, dirEnt->d_name);
+            strcat(path, dirEntry->d_name);
+            // Create the command to compile the C file.
+            char *args[5] = {"gcc", "-o", "./b.out", path, NULL};
 
-            // Once found the '.c' file, create arguments for execute() function.
-            char *command[] = {"gcc", "-o", BINARY, path, NULL};
             // check if the file is a c file or a directory
             struct stat path_stat;
             stat(path, &path_stat);
@@ -276,25 +216,24 @@ int findAndCompile(const char *name, const char *directoryPath) {
                 continue;
             }
 
-            // Compile the C file using execute() function (that uses fork() and execvp()).
-            status = execute(command, NULL);
+            // compile the C file using execute() function (that uses fork() and execvp()).
+            iscFileFound = runCommand(args, NULL);
 
-            // If execution failed, relate as compilation error and return 4 for failure. If something went
-            // wrong, return -1 for error.
-            if (status != SUCCESS) {
-                if (closedir(dir)) {
+            // If execution failed, write the "./results.csv" file and return FAIL.
+            if (iscFileFound != SUCCESS) {
+                if (closedir(dirptr)) {
                     print("Error in: closedir\n");
                     return ERROR;
                 }
-                if (writeResults(name, "10", "COMPILATION_ERROR") == ERROR) {
+                if (writeResults(filename, "10", "COMPILATION_ERROR") == ERROR) {
                     return ERROR;
                 }
-                return FAILURE;
+                return FAIL;
             }
 
             // Else, execution was success, so verify the existance of the binary file.
-            if (access(BINARY, F_OK) == SUCCESS) {
-                if (closedir(dir)) {
+            if (access("./b.out", F_OK) == SUCCESS) {
+                if (closedir(dirptr)) {
                     print("Error in: closedir\n");
                     return ERROR;
                 }
@@ -305,45 +244,34 @@ int findAndCompile(const char *name, const char *directoryPath) {
     }
 
     // Close directory (return -1 if failed).
-    if (closedir(dir) == ERROR) {
+    if (closedir(dirptr) == ERROR) {
         print("Error in: closedir\n");
         return ERROR;
     }
 
     // Handle case C file not found.
-    if (status == NOT_FOUND) {
-        if (writeResults(name, "0", "NO_C_FILE") == ERROR) {
+    if (iscFileFound == NOT_FOUND) {
+        if (writeResults(filename, "0", "NO_C_FILE") == ERROR) {
             return ERROR;
         }
-        return FAILURE;
+        return FAIL;
     }
 
-    // Handle the edge-case where C file was found, execution was successful, but for some
-    // reason the binary file is not created.
-    if (writeResults(name, "10", "COMPILATION_ERROR") == ERROR) {
+    // Handle case binary file not found.
+    if (writeResults(filename, "10", "COMPILATION_ERROR") == ERROR) {
         return ERROR;
     }
 
     // Return 4 for failure for any other unexpected case.
-    return FAILURE;
+    return FAIL;
 
 }
 
-/**********************************************************************************
-* Function:     runProgram
-* Input:        Current directory name and path to input file.
-* Output:       Return 0 for success, -1 for error or 124 for time-out.
-* Operation:    This function creates the arguments to run the compiled program in
-*               the current sub-directory (if found and successfully compiled).
-*               then it run it and return status. It write to the CSV if timed-out.
-***********************************************************************************/
 int runProgram(const char *name, const char *inputFile) {
-
-    // Create command for execvp() -- set timeout for 5 seconds.
-    char *command[] = {"timeout", "5s", BINARY, NULL};
-
-    // Compile program using execute() function (that uses fork() and execvp()).
-    int status = execute(command, inputFile);
+    // command init to run the program, using timeout to limit the run time to 5 seconds.
+    char *command[] = {"timeout", "5s", "./b.out", NULL};
+    // run the command with the input file, returns 0 for success, -1 for error or 124 for time-out.
+    int status = runCommand(command, inputFile);
 
     // Write to the CSV if operation was timed-out.
     if (status == TIMED_OUT) {
@@ -358,11 +286,11 @@ int runProgram(const char *name, const char *inputFile) {
 }
 
 /**********************************************************************************
-* Function:     testOutput
+* Function:     test"./output.txt"
 * Input:        Current file's name and sharedAccess.
-* Output:       The return value of ex31.c (1, 2 or 3), or -1 for error.
-* Operation:    This function tests the output using ex31.c program and write
-*               write the result to results.csv file. The function return ex31.c
+* "./output.txt":       The return value of ex31.c (1, 2 or 3), or -1 for error.
+* Operation:    This function tests the "./output.txt" using ex31.c program and write
+*               write the result to "./results.csv".csv file. The function return ex31.c
 *               return value or -1 if an error occured.
 ***********************************************************************************/
 int testOutput(const char *name, const char *correctOutputFile) {
@@ -371,13 +299,12 @@ int testOutput(const char *name, const char *correctOutputFile) {
     char correctFileCopy[strlen(correctOutputFile)];
     strcpy(correctFileCopy, correctOutputFile);
 
-    // Create command for execvp() -- to use comp.out (ex31.c) program.
-    char *command[] = {COMP, OUTPUT, correctFileCopy, NULL};
+    char *command[] = {"./comp.out", "./output.txt", correctFileCopy, NULL};
 
-    // Test using execute().
-    int status = execute(command, NULL);
+    // run command
+    int status = runCommand(command, NULL);
 
-    // Write result to results.csv and return status code.
+    // Write result to "./results.csv" and return status code.
     // Return -1 for error in case of an unexpected result.
     switch (status) {
         case IDENTICAL:
@@ -394,14 +321,14 @@ int testOutput(const char *name, const char *correctOutputFile) {
 
 /**********************************************************************************
 * Function:     runTest
-* Input:        Target directory, input file location, and output file location.
-* Output:       0 for success, -1 for failure.
+* Input:        Target directory, input file location, and "./output.txt" file location.
+* "./output.txt":       0 for success, -1 for failure.
 * Operation:    This is the main test function. It verifies existance of necessary
 *               files, open the target directory, and for each directory entry it
 *               finds, it does 3 things:
-*                   1) Look for a C file and compile it (with findAndCompile()).
+*                   1) Look for a C file and "./comp.out"ile it (with findAnd"./comp.out"ile()).
 *                   2) Try to run the binary for 5 seconds (with runProgram()).
-*                   3) Compare the output with the correct onr (with testOutput()).
+*                   3) "./comp.out"are the "./output.txt" with the correct onr (with test"./output.txt"()).
 *               Each and every operation is checked, and the function returns -1
 *               if any significant error occured.
 ***********************************************************************************/
@@ -447,7 +374,7 @@ int runTest(const char *target, const char *inputFile, const char *correctOutput
         }
 
         // Look for a C file in the sub-directory and compile it. Return Error (-1) if needed.
-        status = findAndCompile(name, path);
+        status = CompileCFile(name, path);
         if (status == ERROR) {
             closedir(dir);
             return ERROR;
@@ -460,7 +387,7 @@ int runTest(const char *target, const char *inputFile, const char *correctOutput
                 closedir(dir);
                 return ERROR;
             }
-            // If the program ran succesfully, compare its output to the given correct output file.
+            // If the program ran succesfully, compare its "./output.txt" to the given correct "./output.txt" file.
             if (status == SUCCESS) {
                 status = testOutput(name, correctOutputFile);
                 if (status == ERROR) {
@@ -471,7 +398,7 @@ int runTest(const char *target, const char *inputFile, const char *correctOutput
         }
 
         // Cleanup - remove redundent files.
-        if (deleteFile(BINARY) == ERROR || deleteFile(OUTPUT) == ERROR) {
+        if (deleteFile("./b.out") == ERROR || deleteFile("./output.txt") == ERROR) {
             return ERROR;
         }
 
@@ -489,16 +416,16 @@ int runTest(const char *target, const char *inputFile, const char *correctOutput
 
 /**********************************************************************************
 * Function:     setupChecks
-* Input:        Target directory, input file location, and output file location.
-* Output:       0 for success, -1 for failure.
-* Operation:    This function remove old errors.txt and results.csv files and
+* Input:        Target directory, input file location, and "./output.txt" file location.
+* "./output.txt":       0 for success, -1 for failure.
+* Operation:    This function remove old "./errors.txt".txt and "./results.csv".csv files and
 *               verifies that the given target directory, input file, and correct
-*               output file are exists and from the correct types.
+*               "./output.txt" file are exists and from the correct types.
 ***********************************************************************************/
 int setupChecks(const char *directory, const char *input, const char *correct) {
 
     // Remove old files if exists.
-    if (deleteFile(ERRORS) == ERROR || deleteFile(RESULTS) == ERROR) {
+    if (deleteFile("./errors.txt") == ERROR || deleteFile("./results.csv") == ERROR) {
         return ERROR;
     }
 
@@ -517,7 +444,7 @@ int setupChecks(const char *directory, const char *input, const char *correct) {
         return ERROR;
     }
 
-    // Verify output file existance.
+    // Verify "./output.txt" file existance.
     if (access(correct, F_OK) != SUCCESS || stat(correct, &entry) == ERROR || !S_ISREG(entry.st_mode)) {
         print("Output file not exist\n");
         return ERROR;
@@ -528,12 +455,10 @@ int setupChecks(const char *directory, const char *input, const char *correct) {
 
 }
 
-/**********************************************************************************
-* Function:     main
-* Input:        argc, argv -- standard input.
-* Output:       0 if finished properly, or exit with code -1 if a problem occured.
-* Operation:    Entry point of the program.
-***********************************************************************************/
+/*
+ * this is the main function of the program.
+ * it gets the configuration file as an argument and runs the test.
+*/
 int main(int argc, char **argv) {
 
     // Open configuration file.
@@ -567,7 +492,7 @@ int main(int argc, char **argv) {
         return ERROR;
     }
 
-    // Run test -- find C files, compile each of them, run and test outputs.
+    // Run test -- find C files, compile each of them, run and test "./output.txt"s.
     int status = runTest(targetDirectory, inputFile, correctFile);
 
     // If unexpected error will occur, runTest() will return -1, and the main will exit with code -1.
