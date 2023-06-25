@@ -1,5 +1,3 @@
-// Sigal graboys 319009304
-
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
